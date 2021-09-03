@@ -1,0 +1,12 @@
+global:
+  enabled: true
+  datacenter: tecktools
+
+client:
+  enabled: false
+
+server:
+  replicas: 3
+  bootstrapExpect: 3
+  disruptionBudget:
+    maxUnavailable: 0
