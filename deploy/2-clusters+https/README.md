@@ -1,12 +1,11 @@
-# Deploy vault with consul in kind k8s 1.21+
+# Deploy vault with consul using security considerations
 
-**NOTE**: At the time of writing, HashiCorp vault (v1.8.1) requires additional steps when running in Kubernetes 1.21 or newer. Starting k8s v1.21, [Service Account Issuer Discovery](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#service-account-issuer-discovery) feature gate is now stable and enabled by default. 
+This tutorial deploy:
 
-You have 2 methods of resolving the issue.
-* Secure: Configure your cluster to securely serve validation. 
-* Insecure: Disable issuer validation.
+  * k8s cluster (local kind cluster) for vault/consul.
+  * k8s cluster (local kind cluster) for applications that will consume vault secrets, hosted other kubernetes cluster.
 
-This tutorial try this 2 methods and k8s 1.20 method too.
+In addition to this, security options will be used in the context consul/vault/apps.
 
 ## Versions
 ```
@@ -14,32 +13,14 @@ This tutorial try this 2 methods and k8s 1.20 method too.
 kind v0.11.1 go1.16.4 linux/amd64
 # vault version
 Vault v1.8.1 (4b0264f28defc05454c31277cfa6ff63695a458d)
+# consul version
+Consul v1.10.2
 ```
-## Create kind cluster
+## Create kind clusters
 
-Create the cluster with the version you want
+Vault cluster
 ```
-# kind create cluster --name vault --config kind1.21.yaml
-Creating cluster "vault" ...
- ✓ Ensuring node image (kindest/node:v1.21.1) 🖼
- ✓ Preparing nodes 📦 📦 📦 📦
- ✓ Writing configuration 📜
- ✓ Starting control-plane 🕹️
- ✓ Installing CNI 🔌
- ✓ Installing StorageClass 💾
- ✓ Joining worker nodes 🚜
-Set kubectl context to "kind-vault"
-You can now use your cluster with:
-
-kubectl cluster-info --context kind-vault
-
-Thanks for using kind!
-```
-
-or 
-
-```
-# kind create cluster --name vault --config kind1.20.yaml
+# kind create cluster --name vault --config kind-vault.yaml
 Creating cluster "vault" ...
  ✓ Ensuring node image (kindest/node:v1.20.7) 🖼
  ✓ Preparing nodes 📦 📦 📦 📦
@@ -56,25 +37,73 @@ kubectl cluster-info --context kind-vault
 Thanks for using kind!
 ```
 
-### Get cluster informations
+Apps cluster
 
 ```
+# kind create cluster --name apps --config kind-apps.yaml
+Creating cluster "apps" ...
+ ✓ Ensuring node image (kindest/node:v1.20.7) 🖼
+ ✓ Preparing nodes 📦 📦 📦 📦
+ ✓ Writing configuration 📜
+ ✓ Starting control-plane 🕹️
+ ✓ Installing CNI 🔌
+ ✓ Installing StorageClass 💾
+ ✓ Joining worker nodes 🚜
+Set kubectl context to "kind-vault"
+You can now use your cluster with:
+
+kubectl cluster-info --context kind-vault
+
+Thanks for using kind!
+```
+
+### Get clusters informations
+
+```
+# kubectl config use-context kind-apps
 # kubectl cluster-info
-Kubernetes control plane is running at https://127.0.0.1:34259
-CoreDNS is running at https://127.0.0.1:34259/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+Kubernetes control plane is running at https://127.0.0.1:45357
+KubeDNS is running at https://127.0.0.1:45357/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
 
 To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
 
-# kubectl get nodes
-NAME                  STATUS   ROLES                  AGE   VERSION
-vault-control-plane   Ready    control-plane,master   97s   v1.21.1
-vault-worker          Ready    <none>                 62s   v1.21.1
-vault-worker2         Ready    <none>                 62s   v1.21.1
-vault-worker3         Ready    <none>                 62s   v1.21.1
+# kubectl get nodes                   
+NAME                 STATUS   ROLES                  AGE   VERSION
+apps-control-plane   Ready    control-plane,master   24m   v1.20.7
+apps-worker          Ready    <none>                 23m   v1.20.7
+apps-worker2         Ready    <none>                 23m   v1.20.7
+apps-worker3         Ready    <none>                 23m   v1.20.7
+
+# kubectl config use-context kind-vault
+Switched to context "kind-vault".
+# kubectl cluster-info                 
+Kubernetes control plane is running at https://127.0.0.1:35727
+KubeDNS is running at https://127.0.0.1:35727/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
+
+# kubectl get nodes   
+NAME                  STATUS   ROLES                  AGE     VERSION
+vault-control-plane   Ready    control-plane,master   2m56s   v1.20.7
+vault-worker          Ready    <none>                 2m22s   v1.20.7
+vault-worker2         Ready    <none>                 2m22s   v1.20.7
+vault-worker3         Ready    <none>                 2m22s   v1.20.7
 ```
+
+### Install ingress controller
+
+```
+# kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/baremetal/deploy.yaml
+# kubectl get services -n ingress-nginx
+NAME                                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                      AGE
+ingress-nginx-controller             NodePort    10.96.170.71    <none>        80:31459/TCP,443:31363/TCP   3m14s
+ingress-nginx-controller-admission   ClusterIP   10.96.234.178   <none>        443/TCP                      3m14s
+```
+
 
 ## Create hashicorp namespace
 ```
+# kubectl config use-context kind-vault
 # kubectl create namespace hashicorp
 namespace/hashicorp created
 ```
@@ -87,25 +116,25 @@ Add hashicorp helm repository
 # helm repo update
 ```
 
-## Install Consul
+## Consul
 
-This tutorial use vault with consul storage
+### Install Consul
+
+This tutorial use vault with consul storage with enabled gossip encryption, TLS, and ACLs.
 
 ```
 # helm upgrade --install -n hashicorp consul hashicorp/consul --values helm-consul-values.yml
 Release "consul" does not exist. Installing it now.
-W0903 08:29:17.518478 2335357 warnings.go:70] policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+; use policy/v1 PodDisruptionBudget
-W0903 08:29:17.679264 2335357 warnings.go:70] policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+; use policy/v1 PodDisruptionBudget
 NAME: consul
-LAST DEPLOYED: Fri Sep  3 08:29:16 2021
+LAST DEPLOYED: Sat Sep  4 16:59:16 2021
 NAMESPACE: hashicorp
 STATUS: deployed
 REVISION: 1
 NOTES:
 Thank you for installing HashiCorp Consul!
 
-Now that you have deployed Consul, you should look over the docs on using
-Consul with Kubernetes available here:
+Now that you have deployed Consul, you should look over the docs on using 
+Consul with Kubernetes available here: 
 
 https://www.consul.io/docs/platform/k8s/index.html
 
@@ -128,14 +157,113 @@ NAME                   READY   AGE
 consul-consul-server   3/3     79s
 ```
 
+### Verify security enabled
+
+Now, you can verify that gossip encryption and TLS are enabled, and that ACLs are being enforced
+
+In a separate terminal, forward port 8501 from the Consul server on Kubernetes so that you can interact with the Consul CLI from the development host
+
+```
+# kubectl -n hashicorp port-forward consul-consul-server-0 8501:8501
+```
+
+Set the CONSUL_HTTP_ADDR environment variable to use the HTTPS address/port on the development host.
+
+```
+# export CONSUL_HTTP_ADDR=https://127.0.0.1:8501
+```
+
+Export the CA file from Kubernetes so that you can pass it to the CLI.
+
+```
+# kubectl -n hashicorp get secret consul-consul-ca-cert -o jsonpath="{.data['tls\.crt']}" | base64 --decode > ca.pem
+```
+
+Now, execute consul members and provide Consul with the ca-file option to verify TLS connections.
+```
+# consul members -ca-file ca.pem
+Node                    Address           Status  Type    Build   Protocol  DC         Segment
+consul-consul-server-0  10.244.2.9:8301   alive   server  1.10.0  2         tecktools  <all>
+consul-consul-server-1  10.244.3.10:8301  alive   server  1.10.0  2         tecktools  <all>
+consul-consul-server-2  10.244.1.10:8301  alive   server  1.10.0  2         tecktools  <all>
+```
+
+### Set an ACL token
+
+Now, try launching a debug session.
+
+```
+# consul debug -ca-file ca.pem
+```
+
+The command fails with the following message:
+
+```
+==> Capture validation failed: error querying target agent: Unexpected response code: 403 (Permission denied). verify connectivity and agent address
+```
+
+The consul-helm chart created several secrets during the initialization process and registered them with Kubernetes.
+
+For this tutorial you can retrieve the value, decode it, and set it to the CONSUL_HTTP_TOKEN environment variable with the following command.
+
+```
+# export CONSUL_HTTP_TOKEN=$(kubectl -n hashicorp get secrets/consul-consul-bootstrap-acl-token --template={{.data.token}} | base64 -d)
+```
+
+Try to start a debug session again with an ACL token set.
+
+```
+# consul debug -ca-file ca.pem
+==> Starting debugger and capturing static information...
+     Agent Version: '1.10.0'
+          Interval: '30s'
+          Duration: '2m0s'
+            Output: 'consul-debug-1630792579.tar.gz'
+           Capture: 'metrics, logs, pprof, host, agent, cluster'
+==> Beginning capture interval 2021-09-04 17:56:19.23206914 -0400 -04 (0)
+==> Capture successful 2021-09-04 17:56:20.813324637 -0400 -04 (0)
+```
+
+The command succeeds. This proves that ACLs are being enforced. Type CTRL-C to end the debug session in the terminal.
+
+### Create Consul policy to vault
+
+```
+# consul acl policy create -name "vault" -description "Policy to access vault path" -rules @consul-vault-policy-rules.hcl -ca-file ca.pem
+ID:           cf44af88-9a4f-26f8-9ba6-747a120dd1e1
+Name:         vault
+Description:  Policy to access vault path
+Datacenters:  
+Rules:
+key_prefix "vault/" {
+  policy = "write"
+}
+```
+
+
+### Create Consul token to vault
+
+```
+# consul acl token create -description "Policy to access vault path" -policy-name "vault" -ca-file ca.pem
+AccessorID:       218407fa-c1d0-c182-9fe1-a6dce329852a
+SecretID:         3114fd48-c103-3fe8-c3c7-1cde7ad538ee
+Description:      Policy to access vault path
+Local:            false
+Create Time:      2021-09-04 22:15:02.159518609 +0000 UTC
+Policies:
+   cf44af88-9a4f-26f8-9ba6-747a120dd1e1 - vault
+```
+
 ## Install vault
+
+Replace "<SecretID>" in helm-vault.yaml with SecretID obtained in the previous step.
 ```
 # helm upgrade --install -n hashicorp vault hashicorp/vault --values helm-vault-values.yml
 Release "vault" does not exist. Installing it now.
-W0903 08:33:42.101707 2351264 warnings.go:70] policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+; use policy/v1 PodDisruptionBudget
-W0903 08:33:42.145334 2351264 warnings.go:70] policy/v1beta1 PodDisruptionBudget is deprecated in v1.21+, unavailable in v1.25+; use policy/v1 PodDisruptionBudget
+W0904 18:19:15.134075 2978925 warnings.go:70] networking.k8s.io/v1beta1 Ingress is deprecated in v1.19+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
+W0904 18:19:15.217641 2978925 warnings.go:70] networking.k8s.io/v1beta1 Ingress is deprecated in v1.19+, unavailable in v1.22+; use networking.k8s.io/v1 Ingress
 NAME: vault
-LAST DEPLOYED: Fri Sep  3 08:33:41 2021
+LAST DEPLOYED: Sat Sep  4 18:19:14 2021
 NAMESPACE: hashicorp
 STATUS: deployed
 REVISION: 1
@@ -164,6 +292,12 @@ vault-2                                 0/1     Running   0          107s
 vault-3                                 0/1     Running   0          106s
 vault-4                                 0/1     Running   0          105s
 vault-agent-injector-745867c568-44jp7   1/1     Running   0          108s
+```
+
+Use the following command to register a gossip encryption key as a Kubernetes secret that the helm chart can consume.
+
+```
+# kubectl -n hashicorp create secret generic consul-gossip-encryption-key --from-literal=key=$(consul keygen)
 ```
 
 ## Vault generates a master key

@@ -1,0 +1,37 @@
+server:
+  affinity: ""
+  ha:
+    enabled: true
+    replicas: 5
+
+    config: |
+      ui = true
+      listener "tcp" {
+        tls_disable = 1
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+      }
+
+      storage "consul" {
+        path = "vault"
+        address = "consul-consul-server:8501"
+        scheme = "https"
+        tls_skip_verify = "true"
+        token = "3114fd48-c103-3fe8-c3c7-1cde7ad538ee"
+      }
+
+      service_registration "kubernetes" {}
+  ingress:
+    enabled: true
+    hosts:
+      - host: vault.teste.local
+
+ui:
+  enabled: true
+  serviceType: "ClusterIP"
+  externalPort: 8200
+
+injector:
+  enabled: true
+  externalVaultAddr: ""
+  authPath: "auth/kubernetes-kind"
