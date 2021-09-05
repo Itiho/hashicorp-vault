@@ -24,7 +24,9 @@ server:
   ingress:
     enabled: true
     hosts:
-      - host: vault.teste.local
+      - host: vault.clustervault
+    annotations: 
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
 
 ui:
   enabled: true

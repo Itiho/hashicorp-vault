@@ -247,7 +247,7 @@ Repeat the commands for vault[1-4]
 
 In other terminal run port-forward
 ```
-kubectl -n hashicorp port-forward vault-0 8200:8200
+# kubectl -n hashicorp port-forward vault-0 8200:8200
 ```
 
 Login in vault using root token

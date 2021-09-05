@@ -93,13 +93,30 @@ vault-worker3         Ready    <none>                 2m22s   v1.20.7
 ### Install ingress controller
 
 ```
-# kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/baremetal/deploy.yaml
+# kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
 # kubectl get services -n ingress-nginx
 NAME                                 TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)                      AGE
 ingress-nginx-controller             NodePort    10.96.170.71    <none>        80:31459/TCP,443:31363/TCP   3m14s
 ingress-nginx-controller-admission   ClusterIP   10.96.234.178   <none>        443/TCP                      3m14s
 ```
 
+Add the url in hosts file
+```
+# echo "127.0.0.1 clustervault" | sudo tee -a /etc/hosts
+```
+
+Test he url
+```
+# curl http://clustervault   
+<html>
+<head><title>404 Not Found</title></head>
+<body>
+<center><h1>404 Not Found</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+
+```
 
 ## Create hashicorp namespace
 ```
@@ -377,40 +394,27 @@ Repeat the commands for vault[1-4]
 # kubectl -n hashicorp exec vault-4 -- vault operator unseal $VAULT_UNSEAL_KEY3
 ```
 
+## Add the url in hosts file
+```
+# echo "127.0.0.1 vault.clustervault" | sudo tee -a /etc/hosts
+```
+
+*NOTE: Because in this tutorial ingress have a self sign certificate, vault command need skip tls verivy*
+
+```
+# export VAULT_SKIP_VERIFY=1
+```
+
 ## Configure Vault
 
-In other terminal run port-forward
+Export url for vault
 ```
-kubectl -n hashicorp port-forward vault-0 8200:8200
+# export VAULT_ADDR=https://vault.clustervault
 ```
 
 Login in vault using root token
 ```
 # vault login $VAULT_TOKEN
-Success! You are now authenticated. The token information displayed below
-is already stored in the token helper. You do NOT need to run "vault login"
-again. Future Vault requests will automatically use this token.
-
-Key                  Value
----                  -----
-token                <token>
-token_accessor       BWbrB9Wb3VInODesuY8FCoI4
-token_duration       ∞
-token_renewable      false
-token_policies       ["root"]
-identity_policies    []
-policies             ["root"]
-```
-
-If you see the error below
-```
-Error authenticating: error looking up token: Get "https://127.0.0.1:8200/v1/auth/token/lookup-self": EOF
-```
-
-Export vault HTTP address and try again
-```
-# export VAULT_ADDR='http://127.0.0.1:8200'
-# vault login $VAULT_TOKEN                         
 Success! You are now authenticated. The token information displayed below
 is already stored in the token helper. You do NOT need to run "vault login"
 again. Future Vault requests will automatically use this token.
@@ -468,6 +472,9 @@ Get cluster values
 ```
 
 #### Kubernetes up to version 1.20 (original documentation):
+
+*NOTE: If you use kubernetes 1.21, see the [simple kind example](../kind/README.md#kubernetes-version-121)*
+
 Configure auth
 ```
 # vault write auth/kubernetes-kind/config token_reviewer_jwt="$K8S_TOKEN" kubernetes_host="$K8S_ADDRESS" kubernetes_ca_cert=$K8S_CA
@@ -484,56 +491,6 @@ kubernetes_host           https://10.96.0.1:443
 pem_keys                  []
 ```
 
-#### Kubernetes version 1.21+ 
-
-##### Insecure: Disable issuer validation
-kubernetes-kind
-Configure auth
-```
-# vault write auth/kubernetes-kind/config token_reviewer_jwt="$K8S_TOKEN" kubernetes_host="$K8S_ADDRESS" kubernetes_ca_cert=$K8S_CA disable_iss_validation=true
-# vault read auth/kubernetes-kind/config
-Key                       Value
----                       -----
-disable_iss_validation    true
-disable_local_ca_jwt      false
-issuer                    n/a
-kubernetes_ca_cert        -----BEGIN CERTIFICATE-----
-...
------END CERTIFICATE-----
-kubernetes_host           https://10.96.0.1:443
-pem_keys                  []
-```
-##### Secure: Configure your cluster to securely serve validation.
-
-In another terminal run
-```
-kubectl proxy
-```
-
-Get the issue address
-```
-# ISSUER=$(curl --silent http://127.0.0.1:8001/api/v1/namespaces/default/serviceaccounts/default/token -H "Content-Type: application/json" -X POST -d '{"apiVersion": "authentication.k8s.io/v1", "kind": "TokenRequest"}' | jq -r '.status.token' | cut -d. -f2 | base64 -d | jq -r .iss)
-# echo $ISSUER
-https://kubernetes.default.svc.cluster.local
-```
-
-
-Configure auth
-```
-# vault write auth/kubernetes-kind/config token_reviewer_jwt="$K8S_TOKEN" kubernetes_host="$K8S_ADDRESS" kubernetes_ca_cert=$K8S_CA issuer=$ISSUER
-# vault read auth/kubernetes-kind/config
-Key                       Value
----                       -----
-disable_iss_validation    false
-disable_local_ca_jwt      false
-issuer                    https://kubernetes.default.svc.cluster.local
-kubernetes_ca_cert        -----BEGIN CERTIFICATE-----
-...
------END CERTIFICATE-----
-kubernetes_host           https://10.96.0.1:443
-pem_keys                  []
-
-```
 ### Create role
 ```
 # vault write auth/kubernetes-kind/role/demo bound_service_account_names=demo-app bound_service_account_namespaces=default policies=demo-police ttl=1h
