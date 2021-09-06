@@ -1,3 +1,4 @@
+# Work in progress
 # Deploy vault with consul using security considerations
 
 This tutorial deploy:
@@ -102,7 +103,7 @@ ingress-nginx-controller-admission   ClusterIP   10.96.234.178   <none>        4
 
 Add the url in hosts file
 ```
-# echo "127.0.0.1 clustervault" | sudo tee -a /etc/hosts
+# echo "$(docker inspect vault-control-plane |jq -r '.[].NetworkSettings.Networks.kind.IPAddress') clustervault" | sudo tee -a /etc/hosts
 ```
 
 Test he url
@@ -396,7 +397,7 @@ Repeat the commands for vault[1-4]
 
 ## Add the url in hosts file
 ```
-# echo "127.0.0.1 vault.clustervault" | sudo tee -a /etc/hosts
+# echo "$(docker inspect vault-control-plane |jq -r '.[].NetworkSettings.Networks.kind.IPAddress') vault.clustervault" | sudo tee -a /etc/hosts
 ```
 
 *NOTE: Because in this tutorial ingress have a self sign certificate, vault command need skip tls verivy*
@@ -459,26 +460,95 @@ path "secrets/demo" {
 }
 ```
 
-### Kubernetes auth
+## Deploy vault agent inject in kubernetes apps cluster
+
 ```
-# vault auth enable --path kubernetes-kind kubernetes
+# kubectl config use-context kind-apps
+# kubectl create namespace hashicorp
+# helm upgrade --install -n hashicorp vault hashicorp/vault --values helm-vault-injector-values.yml
+```
+### Kubernetes auth enable
+
+```
+# vault auth enable --path kubernetes-apps kubernetes
+# vault auth enable --path kubernetes-vault kubernetes
 ```
 
-Get cluster values
+#### Get app cluster values
+
+The Helm chart creates the vault service account. The service account secret is necessary to configure Vault's Kubernetes auth method.
+
+Describe the vault service account.
 ```
+kubectl -n hashicorp describe serviceaccount vault
+Name:                vault
+Namespace:           hashicorp
+Labels:              app.kubernetes.io/instance=vault
+                     app.kubernetes.io/managed-by=Helm
+                     app.kubernetes.io/name=vault
+                     helm.sh/chart=vault-0.15.0
+Annotations:         meta.helm.sh/release-name: vault
+                     meta.helm.sh/release-namespace: hashicorp
+Image pull secrets:  <none>
+Mountable secrets:   vault-token-89vd5
+Tokens:              vault-token-89vd5
+Events:              <none>
+```
+
+Create a variable named VAULT_HELM_SECRET_NAME that stores the secret name.
+
+```
+# VAULT_HELM_SECRET_NAME=$(kubectl -n hashicorp get secrets --output=json | jq -r '.items[].metadata | select(.name|startswith("vault-token-")).name')
+# echo $VAULT_HELM_SECRET_NAME                        
+vault-token-89vd5
+```
+
+Describe the vault-token secret.
+```
+# kubectl -n hashicorp describe secret $VAULT_HELM_SECRET_NAME
+```
+
+Get the apps cluster values
+
+```
+# APPS_TOKEN_REVIEW_JWT=$(kubectl -n hashicorp get secret $VAULT_HELM_SECRET_NAME --output='go-template={{ .data.token }}' | base64 --decode)
+# APPS_KUBE_CA_CERT=$(kubectl config view --raw --minify --flatten --output='jsonpath={.clusters[].cluster.certificate-authority-data}' | base64 --decode)
+# APPS_KUBE_HOST=$(kubectl config view --raw --minify --flatten --output='jsonpath={.clusters[].cluster.server}')
+```
+
+#### Get vault cluster values
+```
+# kubectl config use-context kind-vault
 # K8S_TOKEN=$(kubectl -n hashicorp exec vault-0 -- cat /var/run/secrets/kubernetes.io/serviceaccount/token)
 # K8S_CA=$(kubectl -n hashicorp exec vault-0 -- cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)
 # K8S_ADDRESS="https://$(kubectl -n hashicorp exec vault-0 -- sh -c 'echo $KUBERNETES_PORT_443_TCP_ADDR'):443"
 ```
 
-#### Kubernetes up to version 1.20 (original documentation):
+#### Configure apps cluster auth:
 
 *NOTE: If you use kubernetes 1.21, see the [simple kind example](../kind/README.md#kubernetes-version-121)*
 
 Configure auth
 ```
-# vault write auth/kubernetes-kind/config token_reviewer_jwt="$K8S_TOKEN" kubernetes_host="$K8S_ADDRESS" kubernetes_ca_cert=$K8S_CA
-# vault read auth/kubernetes-kind/config
+# vault write auth/kubernetes-apps/config token_reviewer_jwt="$APPS_TOKEN_REVIEW_JWT" kubernetes_host="$APPS_KUBE_HOST" kubernetes_ca_cert="$APPS_KUBE_CA_CERT"
+# vault read auth/kubernetes-apps/config
+Key                       Value
+---                       -----
+disable_iss_validation    false
+disable_local_ca_jwt      false
+issuer                    n/a
+kubernetes_ca_cert        -----BEGIN CERTIFICATE-----
+...
+-----END CERTIFICATE-----
+kubernetes_host           https://127.0.0.1:45357
+pem_keys                  []
+```
+
+#### Configure vault cluster auth:
+
+```
+# vault write auth/kubernetes-vault/config token_reviewer_jwt="$K8S_TOKEN" kubernetes_host="$K8S_ADDRESS" kubernetes_ca_cert=$K8S_CA
+vault read auth/kubernetes-vault/config
 Key                       Value
 ---                       -----
 disable_iss_validation    false
@@ -489,18 +559,20 @@ kubernetes_ca_cert        -----BEGIN CERTIFICATE-----
 -----END CERTIFICATE-----
 kubernetes_host           https://10.96.0.1:443
 pem_keys                  []
+
 ```
 
 ### Create role
 ```
-# vault write auth/kubernetes-kind/role/demo bound_service_account_names=demo-app bound_service_account_namespaces=default policies=demo-police ttl=1h
-Success! Data written to: auth/kubernetes-kind/role/demo
+# vault write auth/kubernetes-apps/role/demo bound_service_account_names=demo-app bound_service_account_namespaces=default policies=demo-police ttl=1h issuer=$ISSUER
+Success! Data written to: auth/kubernetes-apps/role/demo
 ```
 
 ### Deployment
 
-Apply the deployment
+Apply the deployment in apps cluster
 ```
+# kubectl config use-context kind-apps
 # kubectl apply -f demo-deploy.yaml
 ```
 
